@@ -39,6 +39,9 @@ function saveLicenseImage($file) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Debug: Log all POST data
+    error_log("POST data: " . json_encode($_POST));
+    
     $first_name   = trim($_POST['first_name'] ?? '');
     $middle_name  = trim($_POST['middle_name'] ?? '') ?: null;
     $last_name    = trim($_POST['last_name'] ?? '');
@@ -48,30 +51,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $personnel_id = trim($_POST['personnel_id'] ?? '');
     $phone        = trim($_POST['phone'] ?? '') ?: null;
 
+    // Collect vehicles dynamically
     $vehicles = [];
     if (isset($_POST['vehicle_type']) && is_array($_POST['vehicle_type'])) {
         foreach ($_POST['vehicle_type'] as $idx => $vt) {
             $pl = trim($_POST['plate_number'][$idx] ?? '');
-            if ($vt) {
-                // For electric bikes, use a placeholder plate number
-                if ($vt === 'electric_bike') {
-                    $pl = 'N/A';
-                }
-                // For motorcycles, if no plate number provided, use 'N/A'
-                if ($vt === 'motorcycle' && empty($pl)) {
-                    $pl = 'N/A';
-                }
-                // For cars, if no plate number provided, use 'N/A'
-                if ($vt === 'car' && empty($pl)) {
-                    $pl = 'N/A';
-                }
-                $vehicles[] = ['type' => $vt, 'plate' => $pl];
+            
+            // Skip empty vehicle types
+            if (empty($vt)) {
+                continue;
             }
+            
+            // For electric bikes, use a placeholder plate number
+            if ($vt === 'electric_bike') {
+                $pl = 'N/A';
+            }
+            
+            // For motorcycles and cars, require plate number
+            if (($vt === 'motorcycle' || $vt === 'car') && empty($pl)) {
+                $message = "⚠ Plate number is required for {$vt}s.";
+                break; // Stop processing and show error
+            }
+            
+            $vehicles[] = ['type' => $vt, 'plate' => $pl];
         }
     }
+    
+    // Debug: Log vehicle data
+    error_log("Vehicles collected: " . json_encode($vehicles));
 
     if (!$first_name || !$last_name || !$username || !$email || !$raw_password || !$personnel_id) {
         $message = "Missing required fields.";
+    } elseif (empty($vehicles)) {
+        $message = "⚠ At least one vehicle is required.";
     } else {
         try {
             $chk1 = $db->prepare("SELECT COUNT(*) FROM personnel WHERE personnel_id = :pid");
@@ -224,7 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </select>
 
             <label>Plate Number:</label>
-            <input type="text" name="plate_number[]">
+            <input type="text" name="plate_number[]" required>
 
             <button type="button" class="remove-vehicle">❌ Remove</button>
         </div>
@@ -233,7 +245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <button type="button" id="add-vehicle">+ Add Vehicle</button>
 
     <br><br>
-    <button type="submit">Register Personnel</button>
+    <button type="submit" onclick="enableAllFields()">Register Personnel</button>
 </form>
 
 
@@ -303,18 +315,35 @@ function attachRemoveHandler(btn) {
     });
 }
 
-// ✅ handle plate number visibility
+// ✅ handle plate number visibility and requirements
 function togglePlateInput(select) {
     const plateInput = select.closest(".vehicle-box").querySelector("input[name='plate_number[]']");
+    const plateLabel = plateInput.previousElementSibling;
+    
     if (select.value === "electric_bike") {
         plateInput.value = ""; // clear value
         plateInput.disabled = true;
+        plateInput.required = false;
         plateInput.style.display = "none";
-        plateInput.previousElementSibling.style.display = "none"; // hide label
+        plateLabel.style.display = "none"; // hide label
+    } else if (select.value === "motorcycle") {
+        plateInput.disabled = false;
+        plateInput.required = true;
+        plateInput.style.display = "block";
+        plateLabel.style.display = "block"; // show label
+        plateLabel.textContent = "Plate Number (required):";
+    } else if (select.value === "car") {
+        plateInput.disabled = false;
+        plateInput.required = true;
+        plateInput.style.display = "block";
+        plateLabel.style.display = "block"; // show label
+        plateLabel.textContent = "Plate Number (required):";
     } else {
         plateInput.disabled = false;
+        plateInput.required = false;
         plateInput.style.display = "block";
-        plateInput.previousElementSibling.style.display = "block"; // show label
+        plateLabel.style.display = "block"; // show label
+        plateLabel.textContent = "Plate Number:";
     }
 }
 
@@ -349,7 +378,7 @@ addBtn.addEventListener("click", function() {
         </select>
 
         <label>Plate Number:</label>
-        <input type="text" name="plate_number[]">
+        <input type="text" name="plate_number[]" required>
 
         <button type="button" class="remove-vehicle">❌ Remove</button>
     `;
@@ -358,6 +387,15 @@ addBtn.addEventListener("click", function() {
     attachRemoveHandler(box.querySelector(".remove-vehicle"));
     attachTypeHandler(box.querySelector("select"));
 });
+
+// Function to enable all fields before form submission
+function enableAllFields() {
+    const form = document.querySelector('.form-container');
+    const disabledInputs = form.querySelectorAll('input[disabled]');
+    disabledInputs.forEach(input => {
+        input.disabled = false;
+    });
+}
 </script>
 
 
