@@ -1,10 +1,15 @@
 <?php
 require_once __DIR__ . '/../../../config/Database.php';
 require_once __DIR__ . '/../../../config/Session.php';
+require_once __DIR__ . '/../../../config/ensureStickerCounters.php';
+require_once __DIR__ . '/../../../config/StickerGenerator.php';
 
 Session::start();
 $db = (new Database())->getConnection();
 $message = "";
+
+// ✅ Ensure counters exist (prevents missing color errors)
+ensureStickerCounters($db);
 
 // --- helpers ---
 function saveLicenseImage($file) {
@@ -48,7 +53,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['vehicle_type']) && is_array($_POST['vehicle_type'])) {
         foreach ($_POST['vehicle_type'] as $idx => $vt) {
             $pl = trim($_POST['plate_number'][$idx] ?? '');
-            if ($vt && $pl) $vehicles[] = ['type'=>$vt, 'plate'=>$pl];
+            if ($vt) {
+                // For electric bikes, use a placeholder plate number
+                if ($vt === 'electric_bike') {
+                    $pl = 'N/A';
+                }
+                // For motorcycles, if no plate number provided, use 'N/A'
+                if ($vt === 'motorcycle' && empty($pl)) {
+                    $pl = 'N/A';
+                }
+                // For cars, if no plate number provided, use 'N/A'
+                if ($vt === 'car' && empty($pl)) {
+                    $pl = 'N/A';
+                }
+                $vehicles[] = ['type' => $vt, 'plate' => $pl];
+            }
         }
     }
 
@@ -88,18 +107,53 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!in_array($v['type'],$allowedTypes)) throw new Exception("Invalid vehicle type.");
                 
                 $color = 'white'; // ✅ force white for all parent vehicles
-                $snum  = generateStickerNumber($db, $color);
+                $sticker_no = generateStickerNumber($db, $color);
 
-                $insv = $db->prepare("INSERT INTO vehicles 
-                    (user_id, vehicle_type, plate_number, sticker_color, sticker_number) 
-                    VALUES (:uid, :vt, :plate, :color, :snum)");
-                $insv->execute([
-                    ':uid'=>$user_id,
-                    ':vt'=>$v['type'],
-                    ':plate'=>$v['plate'],
-                    ':color'=>$color,
-                    ':snum'=>$snum
-                ]);
+                // Generate sticker image
+                try {
+                    // Debug: Log the parameters being passed
+                    error_log("Attempting to generate sticker: Number={$sticker_no}, Type={$v['type']}, Plate={$v['plate']}, Color={$color}");
+                    
+                    $sticker_image_path = StickerGenerator::generateVehicleSticker($sticker_no, $v['type'], $v['plate'], $color);
+                    
+                    // Debug: Log the returned path
+                    error_log("Sticker generated successfully: {$sticker_image_path}");
+                    
+                    $insv = $db->prepare("INSERT INTO vehicles 
+                        (user_id, vehicle_type, plate_number, sticker_color, sticker_number, sticker) 
+                        VALUES (:uid, :vt, :plate, :color, :snum, :sticker_img)");
+                    $insv->execute([
+                        ':uid'=>$user_id,
+                        ':vt'=>$v['type'],
+                        ':plate'=>$v['plate'],
+                        ':color'=>$color,
+                        ':snum'=>$sticker_no,
+                        ':sticker_img'=>$sticker_image_path
+                    ]);
+                    
+                    // Debug: Log successful database insert
+                    error_log("Vehicle inserted with sticker image: {$sticker_image_path}");
+                    
+                } catch (Exception $stickerError) {
+                    // Log sticker generation error but continue with registration
+                    error_log("Sticker generation failed for vehicle {$v['type']} {$v['plate']}: " . $stickerError->getMessage());
+                    error_log("Error details: " . $stickerError->getTraceAsString());
+                    
+                    // Insert vehicle without sticker image
+                    $insv = $db->prepare("INSERT INTO vehicles 
+                        (user_id, vehicle_type, plate_number, sticker_color, sticker_number, sticker) 
+                        VALUES (:uid, :vt, :plate, :color, :snum, NULL)");
+                    $insv->execute([
+                        ':uid'=>$user_id,
+                        ':vt'=>$v['type'],
+                        ':plate'=>$v['plate'],
+                        ':color'=>$color,
+                        ':snum'=>$sticker_no
+                    ]);
+                    
+                    // Debug: Log fallback insert
+                    error_log("Vehicle inserted without sticker image due to error");
+                }
             }
 
             $db->commit();
